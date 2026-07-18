@@ -4,11 +4,11 @@ This repository is a small learning project for the AI-Thinker ESP32-CAM with an
 
 The current firmware:
 
-- starts a Wi-Fi access point named `esp32-cam`
+- tries to connect to your normal Wi-Fi in STA mode
+- falls back to a Wi-Fi access point named `esp32-cam` if STA credentials are missing or the connection fails
 - uses password `12345678`
-- serves a simple camera page at `http://192.168.4.1/`
-- serves a JPEG snapshot at `http://192.168.4.1/jpg`
-- serves an MJPEG stream at `http://192.168.4.1:81/stream`
+- starts mDNS as `http://esp32-cam.local/`
+- serves a simple camera page, JPEG snapshot, MJPEG stream, and JSON status endpoint
 
 ## Hardware
 
@@ -46,16 +46,71 @@ The local development port is currently configured in `platformio.ini` as:
 
 Change `upload_port` and `monitor_port` if your serial device name is different.
 
+## Wi-Fi Modes
+
+The firmware prefers STA mode:
+
+```text
+ESP32-CAM -> your router Wi-Fi
+computer/phone -> same router Wi-Fi
+browser -> http://esp32-cam.local/
+```
+
+To configure STA mode, copy the example secrets file:
+
+```bash
+cp include/secrets.example.h include/secrets.h
+```
+
+Then edit `include/secrets.h`:
+
+```cpp
+#define WIFI_SSID "your-wifi-name"
+#define WIFI_PASSWORD "your-wifi-password"
+```
+
+`include/secrets.h` is ignored by git so local Wi-Fi credentials are not committed.
+
+If credentials are missing or the router connection fails within 15 seconds, the firmware starts AP fallback:
+
+```text
+SSID: esp32-cam
+Password: 12345678
+Open: http://192.168.4.1/
+```
+
+Endpoints:
+
+```text
+http://esp32-cam.local/
+http://esp32-cam.local/jpg
+http://esp32-cam.local/status
+http://<device-ip>:81/stream
+```
+
+In AP fallback mode, use:
+
+```text
+http://192.168.4.1/
+http://192.168.4.1/jpg
+http://192.168.4.1/status
+http://192.168.4.1:81/stream
+```
+
 ## Code Map
 
 - `platformio.ini`: board, framework, serial port, and build settings
-- `src/main.cpp`: camera initialization, Wi-Fi AP setup, HTTP routes, snapshot, and stream handlers
+- `include/secrets.example.h`: template for local Wi-Fi credentials
+- `src/main.cpp`: camera initialization, STA/AP fallback setup, mDNS, HTTP routes, snapshot, and stream handlers
 
 Key places to study:
 
-- Wi-Fi name and password: `AP_SSID`, `AP_PASSWORD`
+- fallback AP name and password: `AP_SSID`, `AP_PASSWORD`
+- STA credentials: local `include/secrets.h`
 - camera pinout and quality: `init_camera()`
 - web page HTML: `INDEX_HTML`
 - snapshot route: `jpg_handler()`
 - stream route: `stream_handler()`
+- status route: `status_handler()`
+- network setup: `connect_sta()`, `start_ap_fallback()`, `start_mdns()`
 - URL registration: `start_web_server()`

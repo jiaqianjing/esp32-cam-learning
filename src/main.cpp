@@ -1,9 +1,22 @@
 #include <Arduino.h>
+#include <ESPmDNS.h>
 #include <WiFi.h>
 #include "esp_camera.h"
 #include "esp_http_server.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/soc.h"
+
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+
+#ifndef WIFI_SSID
+#define WIFI_SSID ""
+#endif
+
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD ""
+#endif
 
 #define PWDN_GPIO_NUM 32
 #define RESET_GPIO_NUM -1
@@ -25,9 +38,12 @@
 
 static const char *AP_SSID = "esp32-cam";
 static const char *AP_PASSWORD = "12345678";
+static const char *MDNS_HOSTNAME = "esp32-cam";
+static const uint32_t STA_CONNECT_TIMEOUT_MS = 15000;
 
 static httpd_handle_t server = nullptr;
 static httpd_handle_t stream_server = nullptr;
+static bool ap_fallback_mode = false;
 
 static const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
@@ -41,15 +57,23 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     h1{font-size:22px;margin:0 0 8px}
     img{width:100%;max-width:900px;height:auto;background:#000}
     a,button{display:inline-block;margin:8px;padding:10px 14px;border:1px solid #666;border-radius:6px;color:#eee;background:#222;text-decoration:none}
+    code{color:#9ee}
   </style>
 </head>
 <body>
   <header>
     <h1>ESP32-CAM</h1>
     <a href="/jpg">Capture JPG</a>
-    <a href="/stream">Stream</a>
+    <a id="streamLink" href="#">Stream</a>
+    <a href="/status">Status</a>
+    <p>mDNS: <code>http://esp32-cam.local/</code></p>
   </header>
-  <img src="/stream">
+  <img id="stream" alt="ESP32-CAM stream">
+  <script>
+    const streamUrl = `http://${location.hostname}:81/stream`;
+    document.getElementById('stream').src = streamUrl;
+    document.getElementById('streamLink').href = streamUrl;
+  </script>
 </body>
 </html>
 )HTML";
@@ -72,6 +96,26 @@ static esp_err_t jpg_handler(httpd_req_t *req) {
   esp_err_t res = httpd_resp_send(req, reinterpret_cast<const char *>(fb->buf), fb->len);
   esp_camera_fb_return(fb);
   return res;
+}
+
+static esp_err_t status_handler(httpd_req_t *req) {
+  IPAddress ip = ap_fallback_mode ? WiFi.softAPIP() : WiFi.localIP();
+  String body = "{";
+  body += "\"mode\":\"";
+  body += ap_fallback_mode ? "AP_FALLBACK" : "STA";
+  body += "\",\"hostname\":\"";
+  body += MDNS_HOSTNAME;
+  body += ".local\",\"ip\":\"";
+  body += ip.toString();
+  body += "\",\"ap_ssid\":\"";
+  body += AP_SSID;
+  body += "\",\"sta_ssid\":\"";
+  body += WIFI_SSID;
+  body += "\"}";
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, body.c_str(), body.length());
 }
 
 static esp_err_t stream_handler(httpd_req_t *req) {
@@ -108,7 +152,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 }
 
 static bool init_camera() {
-  camera_config_t config;
+  camera_config_t config = {};
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
   config.pin_d0 = Y2_GPIO_NUM;
@@ -152,6 +196,69 @@ static bool init_camera() {
   return true;
 }
 
+static bool has_sta_credentials() {
+  return strlen(WIFI_SSID) > 0;
+}
+
+static void print_access_urls(const char *mode, IPAddress ip) {
+  Serial.printf("Network mode: %s\n", mode);
+  Serial.printf("Open: http://%s/\n", ip.toString().c_str());
+  Serial.printf("Snapshot: http://%s/jpg\n", ip.toString().c_str());
+  Serial.printf("Stream: http://%s:81/stream\n", ip.toString().c_str());
+  Serial.printf("mDNS: http://%s.local/\n", MDNS_HOSTNAME);
+}
+
+static bool start_mdns() {
+  if (!MDNS.begin(MDNS_HOSTNAME)) {
+    Serial.println("mDNS failed to start");
+    return false;
+  }
+
+  MDNS.addService("http", "tcp", 80);
+  Serial.printf("mDNS started: http://%s.local/\n", MDNS_HOSTNAME);
+  return true;
+}
+
+static bool connect_sta() {
+  if (!has_sta_credentials()) {
+    Serial.println("STA credentials not configured; using AP fallback");
+    return false;
+  }
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(MDNS_HOSTNAME);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.printf("Connecting to Wi-Fi SSID: %s", WIFI_SSID);
+
+  uint32_t started = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - started < STA_CONNECT_TIMEOUT_MS) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("STA connect failed; using AP fallback");
+    WiFi.disconnect(true);
+    return false;
+  }
+
+  ap_fallback_mode = false;
+  Serial.println("STA connected");
+  Serial.printf("STA IP: %s\n", WiFi.localIP().toString().c_str());
+  return true;
+}
+
+static void start_ap_fallback() {
+  ap_fallback_mode = true;
+  WiFi.mode(WIFI_AP);
+  bool ap_ok = WiFi.softAP(AP_SSID, AP_PASSWORD);
+  Serial.printf("AP fallback %s\n", ap_ok ? "started" : "failed");
+  Serial.printf("SSID: %s\n", AP_SSID);
+  Serial.printf("Password: %s\n", AP_PASSWORD);
+  Serial.printf("AP IP: %s\n", WiFi.softAPIP().toString().c_str());
+}
+
 static void start_web_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
@@ -169,10 +276,17 @@ static void start_web_server() {
       .handler = jpg_handler,
       .user_ctx = nullptr,
   };
+  httpd_uri_t status_uri = {
+      .uri = "/status",
+      .method = HTTP_GET,
+      .handler = status_handler,
+      .user_ctx = nullptr,
+  };
 
   if (httpd_start(&server, &config) == ESP_OK) {
     httpd_register_uri_handler(server, &index_uri);
     httpd_register_uri_handler(server, &jpg_uri);
+    httpd_register_uri_handler(server, &status_uri);
     Serial.println("HTTP server started on port 80");
   }
 
@@ -198,21 +312,20 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.println();
-  Serial.println("Booting ESP32-CAM AP camera firmware");
+  Serial.println("Booting ESP32-CAM STA/AP fallback camera firmware");
 
   if (!init_camera()) {
     Serial.println("Camera failed. Check OV2640 module and AI-Thinker pinout.");
   }
 
-  WiFi.mode(WIFI_AP);
-  bool ap_ok = WiFi.softAP(AP_SSID, AP_PASSWORD);
-  Serial.printf("SoftAP %s\n", ap_ok ? "started" : "failed");
-  Serial.printf("SSID: %s\n", AP_SSID);
-  Serial.printf("Password: %s\n", AP_PASSWORD);
-  Serial.printf("Open: http://%s/\n", WiFi.softAPIP().toString().c_str());
-  Serial.printf("Stream: http://%s:81/stream\n", WiFi.softAPIP().toString().c_str());
+  bool sta_connected = connect_sta();
+  if (!sta_connected) {
+    start_ap_fallback();
+  }
 
+  start_mdns();
   start_web_server();
+  print_access_urls(ap_fallback_mode ? "AP fallback" : "STA", ap_fallback_mode ? WiFi.softAPIP() : WiFi.localIP());
 }
 
 void loop() {
