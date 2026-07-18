@@ -69,6 +69,8 @@ Then edit `include/secrets.h`:
 #define WIFI_PASSWORD "your-wifi-password"
 ```
 
+Classic ESP32-CAM only supports 2.4GHz Wi-Fi. Use a 2.4GHz SSID, not a 5GHz-only network.
+
 `include/secrets.h` is ignored by git so local Wi-Fi credentials are not committed.
 
 If credentials are missing or the router connection fails within 15 seconds, the firmware starts AP fallback:
