@@ -290,7 +290,8 @@ Resolution values:
 Control notes:
 
 - Settings are runtime-only and reset to firmware defaults after reboot.
-- Changing `framesize` while streaming can briefly interrupt the stream.
+- The web console pauses its MJPEG connection before changing `framesize`, waits briefly for the sensor to settle, and resumes only if it was previously playing.
+- Direct API clients should also stop consuming `/stream` before changing `framesize`, then wait about 650 ms before reconnecting.
 - Changing `framesize` also resets JPEG quality to the firmware recommendation for that resolution.
 - High resolution plus low `quality` values can increase latency and reduce stability.
 - `flash` controls GPIO4. Avoid leaving high flash values on for long periods if the board is enclosed or battery powered.

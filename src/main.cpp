@@ -84,8 +84,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);background:#15191f;position:sticky;top:0;z-index:2}
     h1{font-size:18px;margin:0;font-weight:650}
     main{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px;padding:12px;max-width:1440px;margin:0 auto}
-    .preview{min-width:0;background:#07090c;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+    .preview{min-width:0;position:relative;background:#07090c;border:1px solid var(--line);border-radius:8px;overflow:hidden}
     .preview img{display:block;width:100%;min-height:280px;max-height:calc(100vh - 96px);object-fit:contain;background:#050607}
+    .stream-state{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:rgba(11,15,20,.9);color:var(--text);font-size:12px;visibility:hidden}
+    .stream-state.visible{visibility:visible}
     .side{display:grid;gap:12px;align-content:start}
     section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}
     h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 10px}
@@ -109,6 +111,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     .hint{font-size:12px;line-height:1.4;color:var(--muted);margin:8px 0 0}
     .pill{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:4px 8px;color:var(--muted)}
     .ok{color:var(--ok)}.warn{color:var(--warn)}
+    :disabled{cursor:wait;opacity:.55}
     @media(max-width:900px){main{grid-template-columns:1fr}.side{grid-template-columns:1fr}.preview img{max-height:none}.row{grid-template-columns:108px minmax(0,1fr) 38px}}
   </style>
 </head>
@@ -120,6 +123,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <main>
     <div class="preview">
       <img id="stream" alt="ESP32-CAM stream">
+      <span class="stream-state" id="streamState" role="status" aria-live="polite"></span>
     </div>
     <div class="side">
       <section>
@@ -171,31 +175,64 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <script>
     const streamUrl = `http://${location.hostname}:81/stream`;
     const stream = document.getElementById('stream');
+    const streamState = document.getElementById('streamState');
     const logEl = document.getElementById('log');
     const controls = [...document.querySelectorAll('[data-var]')];
     let streaming = true;
     let busy = false;
 
     function log(msg){const t=new Date().toLocaleTimeString();logEl.textContent+=`[${t}] ${msg}\n`;logEl.scrollTop=logEl.scrollHeight}
-    function setStream(on){streaming=on;stream.src=on?`${streamUrl}?t=${Date.now()}`:'';document.getElementById('toggleStream').textContent=on?'Pause':'Resume'}
+    const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+    function showStreamState(message=''){streamState.textContent=message;streamState.classList.toggle('visible',!!message)}
+    function setBusy(on){
+      busy=on;
+      controls.forEach(el=>el.disabled=on);
+      document.getElementById('toggleStream').disabled=on;
+    }
+    function setStream(on){
+      streaming=on;
+      if(on){stream.src=`${streamUrl}?t=${Date.now()}`;showStreamState()}
+      else{stream.removeAttribute('src')}
+      document.getElementById('toggleStream').textContent=on?'Pause':'Resume';
+    }
     function setOutput(el){const out=el.closest('.row')?.querySelector('output');if(out)out.textContent=el.tagName==='SELECT'?el.options[el.selectedIndex].text.split(' ')[0]:el.value}
     async function control(el){
       if(busy)return;
       const val=el.type==='checkbox'?(el.checked?1:0):el.value;
+      const switchingResolution=el.dataset.var==='framesize';
+      const resumeStream=switchingResolution&&streaming;
       setOutput(el);
-      busy=true;
+      setBusy(true);
       try{
+        if(switchingResolution){
+          log(`switching resolution to ${el.options[el.selectedIndex].text}`);
+          showStreamState('Switching resolution...');
+          if(resumeStream){
+            setStream(false);
+            showStreamState('Switching resolution...');
+            await wait(150);
+          }
+        }
         const r=await fetch(`/api/control?var=${encodeURIComponent(el.dataset.var)}&val=${encodeURIComponent(val)}`);
         const data=await r.json();
+        if(!r.ok||!data.ok)throw new Error(data.error||`HTTP ${r.status}`);
         log(data.ok?`${el.dataset.var} = ${val}`:`${el.dataset.var} failed: ${data.error}`);
-        await refreshStatus();
-        if(el.dataset.var==='framesize'){
+        if(switchingResolution){
           const q=el.options[el.selectedIndex]?.dataset.quality;
           if(q)log(`recommended JPEG quality ${q} applied`);
-          if(streaming)setStream(true);
+          await wait(650);
         }
+        await refreshStatus();
       }catch(e){log(`${el.dataset.var} failed: ${e.message}`)}
-      busy=false;
+      finally{
+        if(switchingResolution&&resumeStream){
+          setStream(true);
+          log('stream resumed');
+        }else if(switchingResolution){
+          showStreamState('Stream paused');
+        }
+        setBusy(false);
+      }
     }
     function bind(){
       controls.forEach(el=>{
@@ -204,7 +241,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         el.addEventListener('input',()=>setOutput(el));
         el.addEventListener(event,()=>control(el));
       });
-      document.getElementById('toggleStream').addEventListener('click',()=>setStream(!streaming));
+      document.getElementById('toggleStream').addEventListener('click',()=>{
+        setStream(!streaming);
+        showStreamState(streaming?'':'Stream paused');
+      });
       document.getElementById('streamLink').href=streamUrl;
       setStream(true);
     }
@@ -240,7 +280,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     }
     bind();
     refreshStatus().then(()=>log('status loaded')).catch(e=>log(e.message));
-    setInterval(()=>refreshStatus().catch(()=>{}),5000);
+    setInterval(()=>{if(!busy)refreshStatus().catch(()=>{})},5000);
   </script>
 </body>
 </html>
