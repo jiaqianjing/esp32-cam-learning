@@ -112,25 +112,35 @@ http://192.168.4.1:81/stream
 
 The root page is a compact control console for using ESP32-CAM as an image acquisition device.
 
-Current controls:
+![ESP32-CAM web control console](imgs/demo_console.png)
 
-- MJPEG preview
-- resolution: QVGA, CIF, VGA
-- JPEG quality, auto-reset to a safe recommendation whenever resolution changes
+The console provides:
+
+- live MJPEG preview with pause and resume
+- resolution selection: QVGA (320 x 240), CIF (400 x 296), and VGA (640 x 480)
+- JPEG quality, automatically reset to a stable recommendation whenever resolution changes
 - measured MJPEG FPS and stream frame delay
 - brightness, contrast, saturation
 - vertical flip and horizontal mirror
 - automatic white balance and automatic exposure
 - flash LED intensity on GPIO4
-- snapshot and raw stream links
-- device status: network mode, IP, mDNS host, RSSI, uptime, heap, and PSRAM
+- one-click links for JPEG snapshot, raw MJPEG stream, and JSON status
+- live device status: network mode, IP, mDNS host, RSSI, uptime, heap, and PSRAM
+- an in-page event log for control changes, stream state, and errors
+
+Resolution changes are coordinated with the active MJPEG stream. The console pauses its preview, the firmware closes and drains stale stream connections, the sensor is reconfigured, and the preview resumes after the camera settles. This avoids overlapping stream handlers and the camera panics seen with unsafe live reconfiguration. SVGA and XGA are deliberately unavailable on this board because VGA is the highest resolution verified to capture reliably.
+
+The JSON status response also exposes the last reset reason, measured FPS, frame delay, active stream client count, current flash level, and all runtime sensor settings. See [docs/api.md](docs/api.md) for field definitions, control ranges, and integration examples.
 
 Control API:
 
 ```text
 GET /api/status
+GET /status
 GET /api/control?var=<name>&val=<value>
 ```
+
+`/status` is retained as a legacy alias of `/api/status`.
 
 Supported control names:
 
