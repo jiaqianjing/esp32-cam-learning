@@ -190,7 +190,8 @@ Example response:
   "stream": {
     "mode": "variable",
     "fps_x10": 0,
-    "delay_ms": 60
+    "delay_ms": 60,
+    "clients": 0
   },
   "flash": 0,
   "sensor": {
@@ -223,6 +224,7 @@ Field notes:
 | `stream.mode` | Currently `variable` |
 | `stream.fps_x10` | Measured MJPEG FPS multiplied by 10 |
 | `stream.delay_ms` | Delay inserted between stream frames |
+| `stream.clients` | Number of active MJPEG stream handlers |
 | `flash` | Current GPIO4 flash LED PWM value, 0-255 |
 | `sensor.*` | Current OV2640 driver settings |
 
@@ -291,7 +293,8 @@ Control notes:
 
 - Settings are runtime-only and reset to firmware defaults after reboot.
 - The web console pauses its MJPEG connection before changing `framesize`, waits briefly for the sensor to settle, and resumes only if it was previously playing.
-- Direct API clients should also stop consuming `/stream` before changing `framesize`, then wait about 650 ms before reconnecting.
+- The firmware invalidates and drains active MJPEG handlers before changing `framesize`, so direct API clients cannot reconfigure the sensor underneath an old stream.
+- Direct API clients should still reconnect `/stream` after a successful `framesize` response.
 - Changing `framesize` also resets JPEG quality to the firmware recommendation for that resolution.
 - High resolution plus low `quality` values can increase latency and reduce stability.
 - `flash` controls GPIO4. Avoid leaving high flash values on for long periods if the board is enclosed or battery powered.
@@ -368,8 +371,8 @@ Runtime defaults set in firmware:
 | AP SSID | `esp32-cam` |
 | AP password | `12345678` |
 | mDNS hostname | `esp32-cam.local` |
-| Initial resolution | QVGA during init, then current sensor may report CIF after driver defaults/control |
-| JPEG quality | `12` |
+| Initial resolution | QVGA |
+| JPEG quality | `18` for initial QVGA |
 | Brightness | `1` during init, user-adjustable |
 | Saturation | `-1` during init, user-adjustable |
 | V flip | `1` during init |

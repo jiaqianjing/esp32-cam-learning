@@ -53,6 +53,9 @@ static uint16_t stream_delay_ms = 60;
 static uint16_t stream_fps_x10 = 0;
 static uint16_t stream_frames_in_window = 0;
 static uint32_t stream_fps_window_started = 0;
+static volatile uint32_t stream_generation = 1;
+static volatile uint16_t active_stream_clients = 0;
+static portMUX_TYPE stream_state_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static int recommended_quality_for_framesize(int framesize) {
   switch (framesize) {
@@ -336,6 +339,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
   body += stream_fps_x10;
   body += ",\"delay_ms\":";
   body += stream_delay_ms;
+  body += ",\"clients\":";
+  body += active_stream_clients;
   body += "},\"flash\":";
   body += flash_level;
   body += ",\"sensor\":{";
@@ -383,6 +388,34 @@ static void set_stream_delay(int value) {
   stream_delay_ms = constrain(value, 0, 250);
 }
 
+static uint32_t register_stream_client() {
+  portENTER_CRITICAL(&stream_state_mux);
+  uint32_t generation = stream_generation;
+  active_stream_clients++;
+  portEXIT_CRITICAL(&stream_state_mux);
+  return generation;
+}
+
+static void unregister_stream_client() {
+  portENTER_CRITICAL(&stream_state_mux);
+  if (active_stream_clients > 0) {
+    active_stream_clients--;
+  }
+  portEXIT_CRITICAL(&stream_state_mux);
+}
+
+static bool stop_active_streams(uint32_t timeout_ms) {
+  portENTER_CRITICAL(&stream_state_mux);
+  stream_generation++;
+  portEXIT_CRITICAL(&stream_state_mux);
+
+  uint32_t started = millis();
+  while (active_stream_clients > 0 && millis() - started < timeout_ms) {
+    delay(10);
+  }
+  return active_stream_clients == 0;
+}
+
 static esp_err_t send_control_response(httpd_req_t *req, bool ok, const char *var, int value, const char *error = "") {
   String body = "{\"ok\":";
   body += ok ? "true" : "false";
@@ -422,6 +455,10 @@ static esp_err_t control_handler(httpd_req_t *req) {
   } else if (!sensor) {
     return send_control_response(req, false, var, value, "sensor unavailable");
   } else if (strcmp(var, "framesize") == 0) {
+    if (!stop_active_streams(1000)) {
+      Serial.println("Control framesize failed: stream stop timeout");
+      return send_control_response(req, false, var, value, "stream stop timeout");
+    }
     int framesize = constrain(value, FRAMESIZE_QVGA, FRAMESIZE_XGA);
     ok = sensor->set_framesize(sensor, static_cast<framesize_t>(framesize)) == 0;
     if (ok) {
@@ -470,15 +507,18 @@ static void record_stream_frame() {
 static esp_err_t stream_handler(httpd_req_t *req) {
   static const char *boundary = "123456789000000000000987654321";
   char part_buf[96];
+  uint32_t generation = register_stream_client();
+  esp_err_t result = ESP_OK;
 
   httpd_resp_set_type(req, "multipart/x-mixed-replace;boundary=123456789000000000000987654321");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
-  while (true) {
+  while (generation == stream_generation) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
       Serial.println("Camera stream capture failed");
-      return ESP_FAIL;
+      result = ESP_FAIL;
+      break;
     }
 
     size_t hlen = snprintf(part_buf, sizeof(part_buf),
@@ -499,7 +539,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     delay(stream_delay_ms > 0 ? stream_delay_ms : 1);
   }
 
-  return ESP_OK;
+  unregister_stream_client();
+  return result;
 }
 
 static bool init_camera() {
@@ -525,7 +566,7 @@ static bool init_camera() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size = FRAMESIZE_QVGA;
-  config.jpeg_quality = 12;
+  config.jpeg_quality = recommended_quality_for_framesize(config.frame_size);
   config.fb_count = psramFound() ? 2 : 1;
   config.fb_location = psramFound() ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
   config.grab_mode = CAMERA_GRAB_LATEST;

@@ -149,6 +149,7 @@ Frame rate note:
 - `stream_delay` only throttles the stream loop. It can reduce FPS, but it cannot force the sensor to deliver a guaranteed higher FPS.
 - When `framesize` changes, the firmware automatically applies a recommended JPEG quality for that resolution. You can still manually adjust quality afterward.
 - The web console pauses its MJPEG connection during a resolution change, waits briefly for the sensor to settle, and then resumes only if the stream was previously playing.
+- The firmware also invalidates the old MJPEG handler before reconfiguring the sensor, preventing an old browser connection from overlapping the new stream.
 
 ## Code Map
 
