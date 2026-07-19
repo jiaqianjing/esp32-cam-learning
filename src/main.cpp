@@ -35,44 +35,178 @@
 #define VSYNC_GPIO_NUM 25
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
+#define FLASH_GPIO_NUM 4
+#define FLASH_LEDC_CHANNEL LEDC_CHANNEL_1
+#define FLASH_LEDC_TIMER LEDC_TIMER_1
 
 static const char *AP_SSID = "esp32-cam";
 static const char *AP_PASSWORD = "12345678";
 static const char *MDNS_HOSTNAME = "esp32-cam";
 static const uint32_t STA_CONNECT_TIMEOUT_MS = 15000;
+static const size_t QUERY_BUFFER_SIZE = 96;
 
 static httpd_handle_t server = nullptr;
 static httpd_handle_t stream_server = nullptr;
 static bool ap_fallback_mode = false;
+static int flash_level = 0;
 
 static const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ESP32-CAM</title>
+  <title>ESP32-CAM Console</title>
   <style>
-    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#111;color:#eee;text-align:center}
-    header{padding:18px 12px}
-    h1{font-size:22px;margin:0 0 8px}
-    img{width:100%;max-width:900px;height:auto;background:#000}
-    a,button{display:inline-block;margin:8px;padding:10px 14px;border:1px solid #666;border-radius:6px;color:#eee;background:#222;text-decoration:none}
-    code{color:#9ee}
+    :root{color-scheme:dark;--bg:#111418;--panel:#191e24;--line:#303844;--text:#eef3f8;--muted:#9aa6b2;--accent:#55c2ff;--ok:#74d99f;--warn:#ffd166}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);background:#15191f;position:sticky;top:0;z-index:2}
+    h1{font-size:18px;margin:0;font-weight:650}
+    main{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px;padding:12px;max-width:1440px;margin:0 auto}
+    .preview{min-width:0;background:#07090c;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+    .preview img{display:block;width:100%;min-height:280px;max-height:calc(100vh - 96px);object-fit:contain;background:#050607}
+    .side{display:grid;gap:12px;align-content:start}
+    section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}
+    h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 10px}
+    .row{display:grid;grid-template-columns:118px minmax(0,1fr) 42px;gap:8px;align-items:center;margin:9px 0}
+    .row.switch{grid-template-columns:118px 1fr}
+    label{font-size:13px;color:#c8d1dc}
+    select,input[type=range]{width:100%}
+    select{height:34px;border-radius:6px;border:1px solid var(--line);background:#10151b;color:var(--text);padding:0 8px}
+    input[type=range]{accent-color:var(--accent)}
+    output{font-variant-numeric:tabular-nums;text-align:right;color:var(--muted);font-size:12px}
+    .toggles{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .toggle{display:flex;align-items:center;gap:8px;background:#10151b;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:13px;color:#c8d1dc}
+    .actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    button,a.button{height:36px;border:1px solid var(--line);border-radius:6px;background:#10151b;color:var(--text);text-decoration:none;display:inline-flex;align-items:center;justify-content:center;font-size:13px;cursor:pointer}
+    button:hover,a.button:hover{border-color:var(--accent)}
+    .status{display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px}
+    .metric{background:#10151b;border:1px solid var(--line);border-radius:6px;padding:8px;min-width:0}
+    .metric span{display:block;color:var(--muted);margin-bottom:4px}
+    .metric strong{font-weight:600;overflow-wrap:anywhere}
+    .log{height:118px;overflow:auto;background:#0b0f14;border:1px solid var(--line);border-radius:6px;padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#c7d0dc}
+    .pill{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:4px 8px;color:var(--muted)}
+    .ok{color:var(--ok)}.warn{color:var(--warn)}
+    @media(max-width:900px){main{grid-template-columns:1fr}.side{grid-template-columns:1fr}.preview img{max-height:none}.row{grid-template-columns:108px minmax(0,1fr) 38px}}
   </style>
 </head>
 <body>
   <header>
-    <h1>ESP32-CAM</h1>
-    <a href="/jpg">Capture JPG</a>
-    <a id="streamLink" href="#">Stream</a>
-    <a href="/status">Status</a>
-    <p>mDNS: <code>http://esp32-cam.local/</code></p>
+    <h1>ESP32-CAM Console</h1>
+    <span class="pill" id="netPill">connecting</span>
   </header>
-  <img id="stream" alt="ESP32-CAM stream">
+  <main>
+    <div class="preview">
+      <img id="stream" alt="ESP32-CAM stream">
+    </div>
+    <div class="side">
+      <section>
+        <h2>Capture</h2>
+        <div class="row">
+          <label for="framesize">Resolution</label>
+          <select id="framesize" data-var="framesize">
+            <option value="4">QVGA 320x240</option>
+            <option value="5">CIF 400x296</option>
+            <option value="6">VGA 640x480</option>
+            <option value="7">SVGA 800x600</option>
+            <option value="8">XGA 1024x768</option>
+          </select>
+          <output></output>
+        </div>
+        <div class="row"><label for="quality">JPEG Quality</label><input id="quality" data-var="quality" type="range" min="10" max="40" step="1"><output></output></div>
+        <div class="row"><label for="brightness">Brightness</label><input id="brightness" data-var="brightness" type="range" min="-2" max="2" step="1"><output></output></div>
+        <div class="row"><label for="contrast">Contrast</label><input id="contrast" data-var="contrast" type="range" min="-2" max="2" step="1"><output></output></div>
+        <div class="row"><label for="saturation">Saturation</label><input id="saturation" data-var="saturation" type="range" min="-2" max="2" step="1"><output></output></div>
+        <div class="row"><label for="flash">Flash</label><input id="flash" data-var="flash" type="range" min="0" max="255" step="1"><output></output></div>
+        <div class="toggles">
+          <label class="toggle"><input id="vflip" data-var="vflip" type="checkbox"> V Flip</label>
+          <label class="toggle"><input id="hmirror" data-var="hmirror" type="checkbox"> H Mirror</label>
+          <label class="toggle"><input id="awb" data-var="awb" type="checkbox"> AWB</label>
+          <label class="toggle"><input id="aec" data-var="aec" type="checkbox"> AEC</label>
+        </div>
+      </section>
+      <section>
+        <h2>Actions</h2>
+        <div class="actions">
+          <button id="toggleStream">Pause</button>
+          <a class="button" id="captureLink" href="/jpg" target="_blank">Snapshot</a>
+          <a class="button" id="streamLink" href="#" target="_blank">Stream</a>
+          <a class="button" href="/api/status" target="_blank">JSON</a>
+        </div>
+      </section>
+      <section>
+        <h2>Status</h2>
+        <div class="status" id="statusGrid"></div>
+      </section>
+      <section>
+        <h2>Console</h2>
+        <div class="log" id="log"></div>
+      </section>
+    </div>
+  </main>
   <script>
     const streamUrl = `http://${location.hostname}:81/stream`;
-    document.getElementById('stream').src = streamUrl;
-    document.getElementById('streamLink').href = streamUrl;
+    const stream = document.getElementById('stream');
+    const logEl = document.getElementById('log');
+    const controls = [...document.querySelectorAll('[data-var]')];
+    let streaming = true;
+    let busy = false;
+
+    function log(msg){const t=new Date().toLocaleTimeString();logEl.textContent+=`[${t}] ${msg}\n`;logEl.scrollTop=logEl.scrollHeight}
+    function setStream(on){streaming=on;stream.src=on?`${streamUrl}?t=${Date.now()}`:'';document.getElementById('toggleStream').textContent=on?'Pause':'Resume'}
+    function setOutput(el){const out=el.closest('.row')?.querySelector('output');if(out)out.textContent=el.tagName==='SELECT'?el.options[el.selectedIndex].text.split(' ')[0]:el.value}
+    async function control(el){
+      if(busy)return;
+      const val=el.type==='checkbox'?(el.checked?1:0):el.value;
+      setOutput(el);
+      busy=true;
+      try{
+        const r=await fetch(`/api/control?var=${encodeURIComponent(el.dataset.var)}&val=${encodeURIComponent(val)}`);
+        const data=await r.json();
+        log(data.ok?`${el.dataset.var} = ${val}`:`${el.dataset.var} failed: ${data.error}`);
+        await refreshStatus();
+        if(el.dataset.var==='framesize'&&streaming)setStream(true);
+      }catch(e){log(`${el.dataset.var} failed: ${e.message}`)}
+      busy=false;
+    }
+    function bind(){
+      controls.forEach(el=>{
+        setOutput(el);
+        const event=el.type==='range'?'change':'change';
+        el.addEventListener('input',()=>setOutput(el));
+        el.addEventListener(event,()=>control(el));
+      });
+      document.getElementById('toggleStream').addEventListener('click',()=>setStream(!streaming));
+      document.getElementById('streamLink').href=streamUrl;
+      setStream(true);
+    }
+    function metric(k,v){return `<div class="metric"><span>${k}</span><strong>${v}</strong></div>`}
+    async function refreshStatus(){
+      const r=await fetch('/api/status');
+      const s=await r.json();
+      document.getElementById('netPill').textContent=`${s.network.mode} ${s.network.ip}`;
+      document.getElementById('netPill').className=`pill ${s.network.mode==='STA'?'ok':'warn'}`;
+      const sensor=s.sensor||{};
+      for(const el of controls){
+        if(sensor[el.dataset.var]===undefined&&s.flash===undefined)continue;
+        const value=el.dataset.var==='flash'?s.flash:sensor[el.dataset.var];
+        if(value===undefined)continue;
+        if(el.type==='checkbox')el.checked=!!value;else el.value=value;
+        setOutput(el);
+      }
+      document.getElementById('statusGrid').innerHTML=[
+        metric('IP',s.network.ip),
+        metric('Host',s.network.hostname),
+        metric('RSSI',s.network.rssi+' dBm'),
+        metric('Uptime',Math.floor(s.uptime_ms/1000)+' s'),
+        metric('Heap',s.heap.free),
+        metric('PSRAM',s.psram.free)
+      ].join('');
+      return s;
+    }
+    bind();
+    refreshStatus().then(()=>log('status loaded')).catch(e=>log(e.message));
+    setInterval(()=>refreshStatus().catch(()=>{}),5000);
   </script>
 </body>
 </html>
@@ -99,9 +233,10 @@ static esp_err_t jpg_handler(httpd_req_t *req) {
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
+  sensor_t *sensor = esp_camera_sensor_get();
   IPAddress ip = ap_fallback_mode ? WiFi.softAPIP() : WiFi.localIP();
   String body = "{";
-  body += "\"mode\":\"";
+  body += "\"network\":{\"mode\":\"";
   body += ap_fallback_mode ? "AP_FALLBACK" : "STA";
   body += "\",\"hostname\":\"";
   body += MDNS_HOSTNAME;
@@ -111,11 +246,120 @@ static esp_err_t status_handler(httpd_req_t *req) {
   body += AP_SSID;
   body += "\",\"sta_ssid\":\"";
   body += WIFI_SSID;
-  body += "\"}";
+  body += "\",\"rssi\":";
+  body += ap_fallback_mode ? 0 : WiFi.RSSI();
+  body += "},\"uptime_ms\":";
+  body += millis();
+  body += ",\"heap\":{\"free\":";
+  body += ESP.getFreeHeap();
+  body += ",\"min_free\":";
+  body += ESP.getMinFreeHeap();
+  body += "},\"psram\":{\"found\":";
+  body += psramFound() ? "true" : "false";
+  body += ",\"free\":";
+  body += ESP.getFreePsram();
+  body += "},\"flash\":";
+  body += flash_level;
+  body += ",\"sensor\":{";
+  if (sensor) {
+    body += "\"framesize\":";
+    body += sensor->status.framesize;
+    body += ",\"quality\":";
+    body += sensor->status.quality;
+    body += ",\"brightness\":";
+    body += sensor->status.brightness;
+    body += ",\"contrast\":";
+    body += sensor->status.contrast;
+    body += ",\"saturation\":";
+    body += sensor->status.saturation;
+    body += ",\"vflip\":";
+    body += sensor->status.vflip;
+    body += ",\"hmirror\":";
+    body += sensor->status.hmirror;
+    body += ",\"awb\":";
+    body += sensor->status.awb;
+    body += ",\"aec\":";
+    body += sensor->status.aec;
+  }
+  body += "}}";
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, body.c_str(), body.length());
+}
+
+static bool get_query_value(httpd_req_t *req, const char *key, char *value, size_t value_len) {
+  char query[QUERY_BUFFER_SIZE];
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+    return false;
+  }
+  return httpd_query_key_value(query, key, value, value_len) == ESP_OK;
+}
+
+static void set_flash_level(int value) {
+  flash_level = constrain(value, 0, 255);
+  ledcWrite(FLASH_LEDC_CHANNEL, flash_level);
+}
+
+static esp_err_t send_control_response(httpd_req_t *req, bool ok, const char *var, int value, const char *error = "") {
+  String body = "{\"ok\":";
+  body += ok ? "true" : "false";
+  body += ",\"var\":\"";
+  body += var;
+  body += "\",\"value\":";
+  body += value;
+  if (!ok) {
+    body += ",\"error\":\"";
+    body += error;
+    body += "\"";
+  }
+  body += "}";
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, body.c_str(), body.length());
+}
+
+static esp_err_t control_handler(httpd_req_t *req) {
+  char var[24];
+  char val[16];
+  if (!get_query_value(req, "var", var, sizeof(var)) || !get_query_value(req, "val", val, sizeof(val))) {
+    return send_control_response(req, false, "unknown", 0, "missing query");
+  }
+
+  sensor_t *sensor = esp_camera_sensor_get();
+  int value = atoi(val);
+  bool ok = false;
+
+  if (strcmp(var, "flash") == 0) {
+    set_flash_level(value);
+    ok = true;
+  } else if (!sensor) {
+    return send_control_response(req, false, var, value, "sensor unavailable");
+  } else if (strcmp(var, "framesize") == 0) {
+    ok = sensor->set_framesize(sensor, static_cast<framesize_t>(constrain(value, 4, 8))) == 0;
+  } else if (strcmp(var, "quality") == 0) {
+    ok = sensor->set_quality(sensor, constrain(value, 10, 63)) == 0;
+  } else if (strcmp(var, "brightness") == 0) {
+    ok = sensor->set_brightness(sensor, constrain(value, -2, 2)) == 0;
+  } else if (strcmp(var, "contrast") == 0) {
+    ok = sensor->set_contrast(sensor, constrain(value, -2, 2)) == 0;
+  } else if (strcmp(var, "saturation") == 0) {
+    ok = sensor->set_saturation(sensor, constrain(value, -2, 2)) == 0;
+  } else if (strcmp(var, "vflip") == 0) {
+    ok = sensor->set_vflip(sensor, value ? 1 : 0) == 0;
+  } else if (strcmp(var, "hmirror") == 0) {
+    ok = sensor->set_hmirror(sensor, value ? 1 : 0) == 0;
+  } else if (strcmp(var, "awb") == 0) {
+    ok = sensor->set_whitebal(sensor, value ? 1 : 0) == 0;
+  } else if (strcmp(var, "aec") == 0) {
+    ok = sensor->set_exposure_ctrl(sensor, value ? 1 : 0) == 0;
+  } else {
+    return send_control_response(req, false, var, value, "unknown control");
+  }
+
+  Serial.printf("Control %s=%d %s\n", var, value, ok ? "ok" : "failed");
+  return send_control_response(req, ok, var, value, ok ? "" : "driver rejected value");
 }
 
 static esp_err_t stream_handler(httpd_req_t *req) {
@@ -194,6 +438,12 @@ static bool init_camera() {
 
   Serial.println("Camera init ok");
   return true;
+}
+
+static void init_flash() {
+  ledcSetup(FLASH_LEDC_CHANNEL, 5000, 8);
+  ledcAttachPin(FLASH_GPIO_NUM, FLASH_LEDC_CHANNEL);
+  set_flash_level(0);
 }
 
 static bool has_sta_credentials() {
@@ -277,9 +527,21 @@ static void start_web_server() {
       .user_ctx = nullptr,
   };
   httpd_uri_t status_uri = {
+      .uri = "/api/status",
+      .method = HTTP_GET,
+      .handler = status_handler,
+      .user_ctx = nullptr,
+  };
+  httpd_uri_t legacy_status_uri = {
       .uri = "/status",
       .method = HTTP_GET,
       .handler = status_handler,
+      .user_ctx = nullptr,
+  };
+  httpd_uri_t control_uri = {
+      .uri = "/api/control",
+      .method = HTTP_GET,
+      .handler = control_handler,
       .user_ctx = nullptr,
   };
 
@@ -287,6 +549,8 @@ static void start_web_server() {
     httpd_register_uri_handler(server, &index_uri);
     httpd_register_uri_handler(server, &jpg_uri);
     httpd_register_uri_handler(server, &status_uri);
+    httpd_register_uri_handler(server, &legacy_status_uri);
+    httpd_register_uri_handler(server, &control_uri);
     Serial.println("HTTP server started on port 80");
   }
 
@@ -313,6 +577,7 @@ void setup() {
   delay(1000);
   Serial.println();
   Serial.println("Booting ESP32-CAM STA/AP fallback camera firmware");
+  init_flash();
 
   if (!init_camera()) {
     Serial.println("Camera failed. Check OV2640 module and AI-Thinker pinout.");

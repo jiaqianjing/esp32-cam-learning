@@ -8,7 +8,7 @@ The current firmware:
 - falls back to a Wi-Fi access point named `esp32-cam` if STA credentials are missing or the connection fails
 - uses password `12345678`
 - starts mDNS as `http://esp32-cam.local/`
-- serves a simple camera page, JPEG snapshot, MJPEG stream, and JSON status endpoint
+- serves a web control console, JPEG snapshot, MJPEG stream, JSON status endpoint, and control API
 
 ## Hardware
 
@@ -86,7 +86,7 @@ Endpoints:
 ```text
 http://esp32-cam.local/
 http://esp32-cam.local/jpg
-http://esp32-cam.local/status
+http://esp32-cam.local/api/status
 http://<device-ip>:81/stream
 ```
 
@@ -95,15 +95,53 @@ In AP fallback mode, use:
 ```text
 http://192.168.4.1/
 http://192.168.4.1/jpg
-http://192.168.4.1/status
+http://192.168.4.1/api/status
 http://192.168.4.1:81/stream
+```
+
+## Web Console
+
+The root page is a compact control console for using ESP32-CAM as an image acquisition device.
+
+Current controls:
+
+- MJPEG preview
+- resolution: QVGA, CIF, VGA, SVGA, XGA
+- JPEG quality
+- brightness, contrast, saturation
+- vertical flip and horizontal mirror
+- automatic white balance and automatic exposure
+- flash LED intensity on GPIO4
+- snapshot and raw stream links
+- device status: network mode, IP, mDNS host, RSSI, uptime, heap, and PSRAM
+
+Control API:
+
+```text
+GET /api/status
+GET /api/control?var=<name>&val=<value>
+```
+
+Supported control names:
+
+```text
+framesize
+quality
+brightness
+contrast
+saturation
+vflip
+hmirror
+awb
+aec
+flash
 ```
 
 ## Code Map
 
 - `platformio.ini`: board, framework, serial port, and build settings
 - `include/secrets.example.h`: template for local Wi-Fi credentials
-- `src/main.cpp`: camera initialization, STA/AP fallback setup, mDNS, HTTP routes, snapshot, and stream handlers
+- `src/main.cpp`: camera initialization, STA/AP fallback setup, mDNS, HTTP routes, control console, snapshot, and stream handlers
 
 Key places to study:
 
@@ -114,5 +152,6 @@ Key places to study:
 - snapshot route: `jpg_handler()`
 - stream route: `stream_handler()`
 - status route: `status_handler()`
+- control route: `control_handler()`
 - network setup: `connect_sta()`, `start_ap_fallback()`, `start_mdns()`
 - URL registration: `start_web_server()`
