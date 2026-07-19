@@ -41,6 +41,8 @@ Password: 12345678
 Default IP: 192.168.4.1
 ```
 
+After the network mode is selected, the white GPIO4 flash LED gives a one-time startup indication: 2 short flashes for STA, or 3 slow flashes for AP fallback. It returns to off afterward.
+
 mDNS is advertised as:
 
 ```text

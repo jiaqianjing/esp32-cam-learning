@@ -83,6 +83,13 @@ Password: 12345678
 Open: http://192.168.4.1/
 ```
 
+At the end of network startup, the white GPIO4 flash LED reports the selected mode once:
+
+- 2 short flashes: connected to the configured Wi-Fi in STA mode
+- 3 slow flashes: STA failed and AP fallback was started
+
+The indicator then turns off and remains available to the web console Flash control.
+
 Endpoints:
 
 ```text

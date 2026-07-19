@@ -640,6 +640,23 @@ static void init_flash() {
   set_flash_level(0);
 }
 
+static void blink_network_status(bool sta_connected) {
+  int count = sta_connected ? 2 : 3;
+  uint16_t on_ms = sta_connected ? 120 : 350;
+  uint16_t off_ms = sta_connected ? 140 : 250;
+
+  Serial.printf("Network indicator: %s (%d flashes)\n", sta_connected ? "STA" : "AP fallback", count);
+  for (int i = 0; i < count; i++) {
+    set_flash_level(96);
+    delay(on_ms);
+    set_flash_level(0);
+    if (i + 1 < count) {
+      delay(off_ms);
+    }
+  }
+  set_flash_level(0);
+}
+
 static bool has_sta_credentials() {
   return strlen(WIFI_SSID) > 0;
 }
@@ -781,6 +798,7 @@ void setup() {
   if (!sta_connected) {
     start_ap_fallback();
   }
+  blink_network_status(sta_connected);
 
   start_mdns();
   start_web_server();
