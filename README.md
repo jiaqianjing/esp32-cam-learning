@@ -2,6 +2,8 @@
 
 This repository is a small learning project for the AI-Thinker ESP32-CAM with an OV2640 camera.
 
+For downstream system integration, see [docs/api.md](docs/api.md).
+
 The current firmware:
 
 - tries to connect to your normal Wi-Fi in STA mode
