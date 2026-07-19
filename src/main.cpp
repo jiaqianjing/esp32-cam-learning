@@ -95,13 +95,14 @@ static int recommended_quality_for_framesize(int framesize) {
       return 20;
     case FRAMESIZE_VGA:
       return 22;
-    case FRAMESIZE_SVGA:
-      return 26;
-    case FRAMESIZE_XGA:
-      return 30;
     default:
       return 24;
   }
+}
+
+static bool is_supported_framesize(int framesize) {
+  return framesize == FRAMESIZE_QVGA || framesize == FRAMESIZE_CIF ||
+         framesize == FRAMESIZE_VGA;
 }
 
 static const char INDEX_HTML[] PROGMEM = R"HTML(
@@ -167,8 +168,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
             <option value="5" data-quality="18">QVGA 320x240</option>
             <option value="6" data-quality="20">CIF 400x296</option>
             <option value="8" data-quality="22">VGA 640x480</option>
-            <option value="9" data-quality="26">SVGA 800x600</option>
-            <option value="10" data-quality="30">XGA 1024x768</option>
           </select>
           <output></output>
         </div>
@@ -496,11 +495,14 @@ static esp_err_t control_handler(httpd_req_t *req) {
   } else if (!sensor) {
     return send_control_response(req, false, var, value, "sensor unavailable");
   } else if (strcmp(var, "framesize") == 0) {
+    if (!is_supported_framesize(value)) {
+      return send_control_response(req, false, var, value, "unsupported resolution; maximum is VGA");
+    }
     if (!stop_active_streams(1000)) {
       Serial.println("Control framesize failed: stream stop timeout");
       return send_control_response(req, false, var, value, "stream stop timeout");
     }
-    int framesize = constrain(value, FRAMESIZE_QVGA, FRAMESIZE_XGA);
+    int framesize = value;
     ok = sensor->set_framesize(sensor, static_cast<framesize_t>(framesize)) == 0;
     if (ok) {
       int recommended_quality = recommended_quality_for_framesize(framesize);

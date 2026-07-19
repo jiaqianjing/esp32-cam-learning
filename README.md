@@ -108,7 +108,7 @@ The root page is a compact control console for using ESP32-CAM as an image acqui
 Current controls:
 
 - MJPEG preview
-- resolution: QVGA, CIF, VGA, SVGA, XGA
+- resolution: QVGA, CIF, VGA
 - JPEG quality, auto-reset to a safe recommendation whenever resolution changes
 - measured MJPEG FPS and stream frame delay
 - brightness, contrast, saturation
@@ -151,6 +151,7 @@ Frame rate note:
 - The web console pauses its MJPEG connection during a resolution change, waits briefly for the sensor to settle, and then resumes only if the stream was previously playing.
 - The firmware also invalidates the old MJPEG handler before reconfiguring the sensor, preventing an old browser connection from overlapping the new stream.
 - Stream responses are explicitly closed during a resolution change so the browser does not wait forever on a stale MJPEG request.
+- SVGA and XGA are rejected by the firmware because frame capture at those sizes can panic this specific ESP32-CAM/OV2640 board; VGA is the supported maximum.
 
 ## Code Map
 
