@@ -178,6 +178,7 @@ Example response:
     "sta_ssid": "King",
     "rssi": -48
   },
+  "reset_reason": "power_on",
   "uptime_ms": 8261,
   "heap": {
     "free": 177088,
@@ -216,6 +217,7 @@ Field notes:
 | `network.hostname` | mDNS hostname |
 | `network.ip` | Current reachable device IP |
 | `network.rssi` | Wi-Fi RSSI in dBm. AP fallback reports `0` |
+| `reset_reason` | Cause of the most recent boot, such as `power_on`, `software_reset`, `panic`, or `watchdog` |
 | `uptime_ms` | Milliseconds since boot |
 | `heap.free` | Free internal heap bytes |
 | `heap.min_free` | Minimum free heap since boot |
@@ -294,6 +296,7 @@ Control notes:
 - Settings are runtime-only and reset to firmware defaults after reboot.
 - The web console pauses its MJPEG connection before changing `framesize`, waits briefly for the sensor to settle, and resumes only if it was previously playing.
 - The firmware invalidates and drains active MJPEG handlers before changing `framesize`, so direct API clients cannot reconfigure the sensor underneath an old stream.
+- Invalidated streams have their socket shut down and use `Connection: close`, which interrupts a blocked Wi-Fi write and prevents browsers from leaving a stale MJPEG request behind.
 - Direct API clients should still reconnect `/stream` after a successful `framesize` response.
 - Changing `framesize` also resets JPEG quality to the firmware recommendation for that resolution.
 - High resolution plus low `quality` values can increase latency and reduce stability.

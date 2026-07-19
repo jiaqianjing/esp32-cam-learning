@@ -150,6 +150,7 @@ Frame rate note:
 - When `framesize` changes, the firmware automatically applies a recommended JPEG quality for that resolution. You can still manually adjust quality afterward.
 - The web console pauses its MJPEG connection during a resolution change, waits briefly for the sensor to settle, and then resumes only if the stream was previously playing.
 - The firmware also invalidates the old MJPEG handler before reconfiguring the sensor, preventing an old browser connection from overlapping the new stream.
+- Stream responses are explicitly closed during a resolution change so the browser does not wait forever on a stale MJPEG request.
 
 ## Code Map
 

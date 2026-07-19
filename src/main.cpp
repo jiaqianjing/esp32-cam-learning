@@ -3,6 +3,8 @@
 #include <WiFi.h>
 #include "esp_camera.h"
 #include "esp_http_server.h"
+#include "esp_system.h"
+#include "lwip/sockets.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/soc.h"
 
@@ -55,7 +57,35 @@ static uint16_t stream_frames_in_window = 0;
 static uint32_t stream_fps_window_started = 0;
 static volatile uint32_t stream_generation = 1;
 static volatile uint16_t active_stream_clients = 0;
+static volatile int active_stream_socket = -1;
 static portMUX_TYPE stream_state_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static const char *reset_reason_name(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON:
+      return "power_on";
+    case ESP_RST_EXT:
+      return "external_reset";
+    case ESP_RST_SW:
+      return "software_reset";
+    case ESP_RST_PANIC:
+      return "panic";
+    case ESP_RST_INT_WDT:
+      return "interrupt_watchdog";
+    case ESP_RST_TASK_WDT:
+      return "task_watchdog";
+    case ESP_RST_WDT:
+      return "watchdog";
+    case ESP_RST_DEEPSLEEP:
+      return "deep_sleep";
+    case ESP_RST_BROWNOUT:
+      return "brownout";
+    case ESP_RST_SDIO:
+      return "sdio";
+    default:
+      return "unknown";
+  }
+}
 
 static int recommended_quality_for_framesize(int framesize) {
   switch (framesize) {
@@ -179,6 +209,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     const streamUrl = `http://${location.hostname}:81/stream`;
     const stream = document.getElementById('stream');
     const streamState = document.getElementById('streamState');
+    const emptyFrame = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
     const logEl = document.getElementById('log');
     const controls = [...document.querySelectorAll('[data-var]')];
     let streaming = true;
@@ -195,7 +226,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     function setStream(on){
       streaming=on;
       if(on){stream.src=`${streamUrl}?t=${Date.now()}`;showStreamState()}
-      else{stream.removeAttribute('src')}
+      else{stream.src=emptyFrame}
       document.getElementById('toggleStream').textContent=on?'Pause':'Resume';
     }
     function setOutput(el){const out=el.closest('.row')?.querySelector('output');if(out)out.textContent=el.tagName==='SELECT'?el.options[el.selectedIndex].text.split(' ')[0]:el.value}
@@ -325,7 +356,9 @@ static esp_err_t status_handler(httpd_req_t *req) {
   body += WIFI_SSID;
   body += "\",\"rssi\":";
   body += ap_fallback_mode ? 0 : WiFi.RSSI();
-  body += "},\"uptime_ms\":";
+  body += "},\"reset_reason\":\"";
+  body += reset_reason_name(esp_reset_reason());
+  body += "\",\"uptime_ms\":";
   body += millis();
   body += ",\"heap\":{\"free\":";
   body += ESP.getFreeHeap();
@@ -388,10 +421,11 @@ static void set_stream_delay(int value) {
   stream_delay_ms = constrain(value, 0, 250);
 }
 
-static uint32_t register_stream_client() {
+static uint32_t register_stream_client(int socket_fd) {
   portENTER_CRITICAL(&stream_state_mux);
   uint32_t generation = stream_generation;
   active_stream_clients++;
+  active_stream_socket = socket_fd;
   portEXIT_CRITICAL(&stream_state_mux);
   return generation;
 }
@@ -401,13 +435,20 @@ static void unregister_stream_client() {
   if (active_stream_clients > 0) {
     active_stream_clients--;
   }
+  active_stream_socket = -1;
   portEXIT_CRITICAL(&stream_state_mux);
 }
 
 static bool stop_active_streams(uint32_t timeout_ms) {
+  int socket_fd;
   portENTER_CRITICAL(&stream_state_mux);
   stream_generation++;
+  socket_fd = active_stream_socket;
   portEXIT_CRITICAL(&stream_state_mux);
+
+  if (socket_fd >= 0) {
+    shutdown(socket_fd, SHUT_RDWR);
+  }
 
   uint32_t started = millis();
   while (active_stream_clients > 0 && millis() - started < timeout_ms) {
@@ -507,11 +548,13 @@ static void record_stream_frame() {
 static esp_err_t stream_handler(httpd_req_t *req) {
   static const char *boundary = "123456789000000000000987654321";
   char part_buf[96];
-  uint32_t generation = register_stream_client();
+  uint32_t generation = register_stream_client(httpd_req_to_sockfd(req));
   esp_err_t result = ESP_OK;
 
   httpd_resp_set_type(req, "multipart/x-mixed-replace;boundary=123456789000000000000987654321");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  httpd_resp_set_hdr(req, "Connection", "close");
 
   while (generation == stream_generation) {
     camera_fb_t *fb = esp_camera_fb_get();
@@ -532,6 +575,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     esp_camera_fb_return(fb);
 
     if (res != ESP_OK) {
+      result = res;
       break;
     }
 
