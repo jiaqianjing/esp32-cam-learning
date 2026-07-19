@@ -54,6 +54,23 @@ static uint16_t stream_fps_x10 = 0;
 static uint16_t stream_frames_in_window = 0;
 static uint32_t stream_fps_window_started = 0;
 
+static int recommended_quality_for_framesize(int framesize) {
+  switch (framesize) {
+    case FRAMESIZE_QVGA:
+      return 18;
+    case FRAMESIZE_CIF:
+      return 20;
+    case FRAMESIZE_VGA:
+      return 22;
+    case FRAMESIZE_SVGA:
+      return 26;
+    case FRAMESIZE_XGA:
+      return 30;
+    default:
+      return 24;
+  }
+}
+
 static const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
 <html>
@@ -110,11 +127,11 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         <div class="row">
           <label for="framesize">Resolution</label>
           <select id="framesize" data-var="framesize">
-            <option value="4">QVGA 320x240</option>
-            <option value="5">CIF 400x296</option>
-            <option value="6">VGA 640x480</option>
-            <option value="7">SVGA 800x600</option>
-            <option value="8">XGA 1024x768</option>
+            <option value="5" data-quality="18">QVGA 320x240</option>
+            <option value="6" data-quality="20">CIF 400x296</option>
+            <option value="8" data-quality="22">VGA 640x480</option>
+            <option value="9" data-quality="26">SVGA 800x600</option>
+            <option value="10" data-quality="30">XGA 1024x768</option>
           </select>
           <output></output>
         </div>
@@ -172,7 +189,11 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         const data=await r.json();
         log(data.ok?`${el.dataset.var} = ${val}`:`${el.dataset.var} failed: ${data.error}`);
         await refreshStatus();
-        if(el.dataset.var==='framesize'&&streaming)setStream(true);
+        if(el.dataset.var==='framesize'){
+          const q=el.options[el.selectedIndex]?.dataset.quality;
+          if(q)log(`recommended JPEG quality ${q} applied`);
+          if(streaming)setStream(true);
+        }
       }catch(e){log(`${el.dataset.var} failed: ${e.message}`)}
       busy=false;
     }
@@ -361,7 +382,12 @@ static esp_err_t control_handler(httpd_req_t *req) {
   } else if (!sensor) {
     return send_control_response(req, false, var, value, "sensor unavailable");
   } else if (strcmp(var, "framesize") == 0) {
-    ok = sensor->set_framesize(sensor, static_cast<framesize_t>(constrain(value, 4, 8))) == 0;
+    int framesize = constrain(value, FRAMESIZE_QVGA, FRAMESIZE_XGA);
+    ok = sensor->set_framesize(sensor, static_cast<framesize_t>(framesize)) == 0;
+    if (ok) {
+      int recommended_quality = recommended_quality_for_framesize(framesize);
+      ok = sensor->set_quality(sensor, recommended_quality) == 0;
+    }
   } else if (strcmp(var, "quality") == 0) {
     ok = sensor->set_quality(sensor, constrain(value, 10, 63)) == 0;
   } else if (strcmp(var, "brightness") == 0) {

@@ -109,7 +109,7 @@ Current controls:
 
 - MJPEG preview
 - resolution: QVGA, CIF, VGA, SVGA, XGA
-- JPEG quality
+- JPEG quality, auto-reset to a safe recommendation whenever resolution changes
 - measured MJPEG FPS and stream frame delay
 - brightness, contrast, saturation
 - vertical flip and horizontal mirror
@@ -147,6 +147,7 @@ Frame rate note:
 - Actual FPS depends on resolution, JPEG quality, light/exposure time, Wi-Fi quality, and browser/client speed.
 - The web console displays measured MJPEG FPS in `/api/status`.
 - `stream_delay` only throttles the stream loop. It can reduce FPS, but it cannot force the sensor to deliver a guaranteed higher FPS.
+- When `framesize` changes, the firmware automatically applies a recommended JPEG quality for that resolution. You can still manually adjust quality afterward.
 
 ## Code Map
 

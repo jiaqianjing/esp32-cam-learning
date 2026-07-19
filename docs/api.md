@@ -265,7 +265,7 @@ Supported controls:
 
 | `var` | Range | Meaning |
 |---|---:|---|
-| `framesize` | `4`-`8` | Camera resolution enum |
+| `framesize` | `5`, `6`, `8`, `9`, `10` | Camera resolution enum |
 | `quality` | `10`-`63` | JPEG compression quality. Lower is better/larger |
 | `brightness` | `-2`-`2` | Sensor brightness |
 | `contrast` | `-2`-`2` | Sensor contrast |
@@ -281,18 +281,31 @@ Resolution values:
 
 | Value | Name | Size |
 |---:|---|---|
-| `4` | QVGA | 320 x 240 |
-| `5` | CIF | 400 x 296 |
-| `6` | VGA | 640 x 480 |
-| `7` | SVGA | 800 x 600 |
-| `8` | XGA | 1024 x 768 |
+| `5` | QVGA | 320 x 240 |
+| `6` | CIF | 400 x 296 |
+| `8` | VGA | 640 x 480 |
+| `9` | SVGA | 800 x 600 |
+| `10` | XGA | 1024 x 768 |
 
 Control notes:
 
 - Settings are runtime-only and reset to firmware defaults after reboot.
 - Changing `framesize` while streaming can briefly interrupt the stream.
+- Changing `framesize` also resets JPEG quality to the firmware recommendation for that resolution.
 - High resolution plus low `quality` values can increase latency and reduce stability.
 - `flash` controls GPIO4. Avoid leaving high flash values on for long periods if the board is enclosed or battery powered.
+
+Recommended JPEG quality values applied on every `framesize` change:
+
+| Framesize | Size | Applied quality |
+|---|---|---:|
+| QVGA | 320 x 240 | `18` |
+| CIF | 400 x 296 | `20` |
+| VGA | 640 x 480 | `22` |
+| SVGA | 800 x 600 | `26` |
+| XGA | 1024 x 768 | `30` |
+
+The quality number is intentionally higher at larger resolutions because ESP32-CAM JPEG quality is inverse: lower numbers produce better/larger images, while higher numbers produce smaller/faster images.
 
 ## Recommended Integration Patterns
 
