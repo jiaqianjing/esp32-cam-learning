@@ -108,6 +108,7 @@ Current controls:
 - MJPEG preview
 - resolution: QVGA, CIF, VGA, SVGA, XGA
 - JPEG quality
+- measured MJPEG FPS and stream frame delay
 - brightness, contrast, saturation
 - vertical flip and horizontal mirror
 - automatic white balance and automatic exposure
@@ -135,7 +136,15 @@ hmirror
 awb
 aec
 flash
+stream_delay
 ```
+
+Frame rate note:
+
+- OV2640/ESP32-CAM frame rate is variable in this firmware, not a fixed per-resolution setting.
+- Actual FPS depends on resolution, JPEG quality, light/exposure time, Wi-Fi quality, and browser/client speed.
+- The web console displays measured MJPEG FPS in `/api/status`.
+- `stream_delay` only throttles the stream loop. It can reduce FPS, but it cannot force the sensor to deliver a guaranteed higher FPS.
 
 ## Code Map
 

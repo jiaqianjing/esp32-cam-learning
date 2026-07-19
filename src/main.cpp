@@ -49,6 +49,10 @@ static httpd_handle_t server = nullptr;
 static httpd_handle_t stream_server = nullptr;
 static bool ap_fallback_mode = false;
 static int flash_level = 0;
+static uint16_t stream_delay_ms = 60;
+static uint16_t stream_fps_x10 = 0;
+static uint16_t stream_frames_in_window = 0;
+static uint32_t stream_fps_window_started = 0;
 
 static const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
@@ -85,6 +89,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     .metric span{display:block;color:var(--muted);margin-bottom:4px}
     .metric strong{font-weight:600;overflow-wrap:anywhere}
     .log{height:118px;overflow:auto;background:#0b0f14;border:1px solid var(--line);border-radius:6px;padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#c7d0dc}
+    .hint{font-size:12px;line-height:1.4;color:var(--muted);margin:8px 0 0}
     .pill{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:4px 8px;color:var(--muted)}
     .ok{color:var(--ok)}.warn{color:var(--warn)}
     @media(max-width:900px){main{grid-template-columns:1fr}.side{grid-template-columns:1fr}.preview img{max-height:none}.row{grid-template-columns:108px minmax(0,1fr) 38px}}
@@ -114,6 +119,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
           <output></output>
         </div>
         <div class="row"><label for="quality">JPEG Quality</label><input id="quality" data-var="quality" type="range" min="10" max="40" step="1"><output></output></div>
+        <div class="row"><label for="stream_delay">Frame Delay</label><input id="stream_delay" data-var="stream_delay" type="range" min="0" max="250" step="10"><output></output></div>
         <div class="row"><label for="brightness">Brightness</label><input id="brightness" data-var="brightness" type="range" min="-2" max="2" step="1"><output></output></div>
         <div class="row"><label for="contrast">Contrast</label><input id="contrast" data-var="contrast" type="range" min="-2" max="2" step="1"><output></output></div>
         <div class="row"><label for="saturation">Saturation</label><input id="saturation" data-var="saturation" type="range" min="-2" max="2" step="1"><output></output></div>
@@ -124,6 +130,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
           <label class="toggle"><input id="awb" data-var="awb" type="checkbox"> AWB</label>
           <label class="toggle"><input id="aec" data-var="aec" type="checkbox"> AEC</label>
         </div>
+        <p class="hint">Sensor FPS is automatic. The console shows measured MJPEG FPS; Frame Delay only slows the stream loop.</p>
       </section>
       <section>
         <h2>Actions</h2>
@@ -188,16 +195,22 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       document.getElementById('netPill').className=`pill ${s.network.mode==='STA'?'ok':'warn'}`;
       const sensor=s.sensor||{};
       for(const el of controls){
-        if(sensor[el.dataset.var]===undefined&&s.flash===undefined)continue;
-        const value=el.dataset.var==='flash'?s.flash:sensor[el.dataset.var];
+        let value;
+        if(el.dataset.var==='flash')value=s.flash;
+        else if(el.dataset.var==='stream_delay')value=s.stream?.delay_ms;
+        else value=sensor[el.dataset.var];
         if(value===undefined)continue;
         if(el.type==='checkbox')el.checked=!!value;else el.value=value;
         setOutput(el);
       }
+      const fps=(s.stream.fps_x10/10).toFixed(1);
       document.getElementById('statusGrid').innerHTML=[
         metric('IP',s.network.ip),
         metric('Host',s.network.hostname),
         metric('RSSI',s.network.rssi+' dBm'),
+        metric('FPS',fps+' variable'),
+        metric('FPS Mode',s.stream.mode),
+        metric('Delay',s.stream.delay_ms+' ms'),
         metric('Uptime',Math.floor(s.uptime_ms/1000)+' s'),
         metric('Heap',s.heap.free),
         metric('PSRAM',s.psram.free)
@@ -258,6 +271,10 @@ static esp_err_t status_handler(httpd_req_t *req) {
   body += psramFound() ? "true" : "false";
   body += ",\"free\":";
   body += ESP.getFreePsram();
+  body += "},\"stream\":{\"mode\":\"variable\",\"fps_x10\":";
+  body += stream_fps_x10;
+  body += ",\"delay_ms\":";
+  body += stream_delay_ms;
   body += "},\"flash\":";
   body += flash_level;
   body += ",\"sensor\":{";
@@ -301,6 +318,10 @@ static void set_flash_level(int value) {
   ledcWrite(FLASH_LEDC_CHANNEL, flash_level);
 }
 
+static void set_stream_delay(int value) {
+  stream_delay_ms = constrain(value, 0, 250);
+}
+
 static esp_err_t send_control_response(httpd_req_t *req, bool ok, const char *var, int value, const char *error = "") {
   String body = "{\"ok\":";
   body += ok ? "true" : "false";
@@ -334,6 +355,9 @@ static esp_err_t control_handler(httpd_req_t *req) {
   if (strcmp(var, "flash") == 0) {
     set_flash_level(value);
     ok = true;
+  } else if (strcmp(var, "stream_delay") == 0) {
+    set_stream_delay(value);
+    ok = true;
   } else if (!sensor) {
     return send_control_response(req, false, var, value, "sensor unavailable");
   } else if (strcmp(var, "framesize") == 0) {
@@ -360,6 +384,21 @@ static esp_err_t control_handler(httpd_req_t *req) {
 
   Serial.printf("Control %s=%d %s\n", var, value, ok ? "ok" : "failed");
   return send_control_response(req, ok, var, value, ok ? "" : "driver rejected value");
+}
+
+static void record_stream_frame() {
+  uint32_t now = millis();
+  if (stream_fps_window_started == 0) {
+    stream_fps_window_started = now;
+  }
+
+  stream_frames_in_window++;
+  uint32_t elapsed = now - stream_fps_window_started;
+  if (elapsed >= 1000) {
+    stream_fps_x10 = (stream_frames_in_window * 10000UL) / elapsed;
+    stream_frames_in_window = 0;
+    stream_fps_window_started = now;
+  }
 }
 
 static esp_err_t stream_handler(httpd_req_t *req) {
@@ -389,7 +428,9 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     if (res != ESP_OK) {
       break;
     }
-    delay(60);
+
+    record_stream_frame();
+    delay(stream_delay_ms > 0 ? stream_delay_ms : 1);
   }
 
   return ESP_OK;
